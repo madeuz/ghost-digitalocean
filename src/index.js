@@ -1,18 +1,81 @@
 import AWS from 'aws-sdk'
 import BaseStore from 'ghost-storage-base'
-import {
-  join
-} from 'path'
-import Promise, {
-  promisify
-} from 'bluebird'
-import {
-  readFile
-} from 'fs'
+import { join } from 'path'
+import Promise, { promisify } from 'bluebird'
+import { readFile } from 'fs'
+
+const imageSizes = {
+  xs: {
+    width: 100
+  },
+  s: {
+    width: 300
+  },
+  m: {
+    width: 500
+  },
+  l: {
+    width: 1000
+  }
+}
 
 const readFileAsync = promisify(readFile)
 
 const removeLeadingSlashes = str => str.indexOf('/') === 0 ? str.substring(1) : str
+
+/**
+ * Resize an image
+ *
+ * @param {Buffer} originalBuffer image to resize
+ * @param {{width, height}} options
+ * @returns {Buffer} the resizedBuffer
+ */
+const unsafeResizeFromBuffer = (originalBuffer, {width, height} = {}) => {
+  const sharp = require('sharp');
+
+  // Disable the internal libvips cache - https://sharp.pixelplumbing.com/api-utility#cache
+  sharp.cache(false);
+
+  return sharp(originalBuffer)
+    .resize(width, height, {
+      // CASE: dont make the image bigger than it was
+      withoutEnlargement: true
+    })
+    // CASE: Automatically remove metadata and rotate based on the orientation.
+    .rotate()
+    .toFormat('webp')
+    .toBuffer()
+    .then((resizedBuffer) => {
+      return resizedBuffer.length < originalBuffer.length ? resizedBuffer : originalBuffer;
+    });
+};
+
+/**
+ * Internal utility to wrap all transform functions in error handling
+ * Allows us to keep Sharp as an optional dependency
+ *
+ * @param {Function} fn
+ */
+const makeSafe = fn => (...args) => {
+  try {
+    require('sharp');
+  } catch (err) {
+    return Promise.reject(new errors.InternalServerError({
+      message: 'Sharp wasn\'t installed',
+      code: 'SHARP_INSTALLATION',
+      err: err
+    }));
+  }
+  return fn(...args).catch((err) => {
+    throw new errors.InternalServerError({
+      message: 'Unable to manipulate image.',
+      err: err,
+      code: 'IMAGE_PROCESSING'
+    });
+  });
+};
+
+const resizeFromBuffer = makeSafe(unsafeResizeFromBuffer)
 
 class DOStore extends BaseStore {
   constructor(config = {}) {
@@ -41,7 +104,7 @@ class DOStore extends BaseStore {
 
   /**
    * Returns the AWS S3 library for the module functions.
-   * 
+   *
    * @returns {*} s3 - The AWS S3 library for accessing Digital Ocean Spaces.
    */
   s3() {
@@ -59,8 +122,8 @@ class DOStore extends BaseStore {
 
   /**
    * Used by the Base storage adapter to check whether a file exists or not.
-   * 
-   * @param {FILE_NAME} fileName - the name of the file which is being uploaded. 
+   *
+   * @param {FILE_NAME} fileName - the name of the file which is being uploaded.
    * @param {TARGET_DIR} targetDir - the target dir of the file name. This is optional, ensure you first check if a custom dir was passed, otherwise fallback to the default dir/location of files.
    * @returns {*} promise - A promise which resolves to true or false depending on whether or not the given image has already been stored.
    */
@@ -79,7 +142,7 @@ class DOStore extends BaseStore {
 
   /**
    * Store the image and return a promise which resolves to the path from which the image should be requested in future.
-   * 
+   *
    * @param {IMAGE} image - an image object with properties name and path
    * @param {TARGET_DIR} targetDir - a path to where to store the image. Example here: https://github.com/TryGhost/Ghost/blob/master/core/server/adapters/storage/LocalFileStorage.js#L35
    * @returns {*} promise - A promise which resolves to the full URI of the image, either relative to the blog or absolute.
@@ -87,23 +150,70 @@ class DOStore extends BaseStore {
   save(image, targetDir) {
     const directory = targetDir || this.getTargetDir(this.subFolder)
 
+    if (['image/jpeg', 'image/png'].includes(image.type) && !image.name.includes('_o.')) {
+      const imageDimensions = Object.keys(imageSizes).reduce((dimensions, size) => {
+        const {width, height} = imageSizes[size];
+        const dimension = (width ? 'w' + width : '') + (height ? 'h' + height : '');
+        return Object.assign({
+          [dimension]: imageSizes[size]
+        }, dimensions);
+      }, {});
+
+      return new Promise((resolve, reject) => {
+        Promise.all([
+          this.getUniqueFileName(image, directory),
+          readFileAsync(image.path)
+        ]).then(([fileName, file]) => (
+          Promise.all(Object.keys(imageDimensions).map(imageDimension => (
+            resizeFromBuffer(file, imageDimensions[imageDimension]).then((transformed) => (
+              this.saveRaw(transformed, fileName.replace(/\.[^/.]+$/, '_' + imageDimension + '.webp'))
+            ))
+          )))
+            .then(() => resolve(`${this.spaceUrl}/${fileName.replace(/\.[^/.]+$/, '_w1000.webp')}`))
+        )).catch(error => reject(error))
+      })
+    }
+    else {
+      return new Promise((resolve, reject) => {
+        Promise.all([
+          this.getUniqueFileName(image, directory),
+          readFileAsync(image.path)
+        ]).then(([fileName, file]) => (
+          this.s3()
+            .putObject({
+              ACL: 'public-read',
+              Body: file,
+              Bucket: this.bucket,
+              CacheControl: `max-age=${365 * 24 * 60 * 60}`,
+              ContentType: image.type,
+              Key: removeLeadingSlashes(fileName)
+            })
+            .promise()
+            .then(() => resolve(`${this.spaceUrl}/${fileName}`))
+        )).catch(error => reject(error))
+      })
+    }
+  }
+
+  /**
+   * Saves a buffer in the targetPath
+   * - buffer is an instance of Buffer
+   * - returns a Promise which returns the full URL to retrieve the data
+   */
+  saveRaw(buffer, targetPath) {
     return new Promise((resolve, reject) => {
-      Promise.all([
-        this.getUniqueFileName(image, directory),
-        readFileAsync(image.path)
-      ]).then(([fileName, file]) => (
-        this.s3()
-        .putObject({
-          ACL: 'public-read',
-          Body: file,
-          Bucket: this.bucket,
-          CacheControl: `max-age=${30 * 24 * 60 * 60}`,
-          ContentType: image.type,
-          Key: removeLeadingSlashes(fileName)
-        })
-        .promise()
-        .then(() => resolve(`${this.spaceUrl}/${fileName}`))
-      )).catch(error => reject(error))
+      this.s3()
+      .putObject({
+        ACL: 'public-read',
+        Body: buffer,
+        Bucket: this.bucket,
+        CacheControl: `max-age=${365 * 24 * 60 * 60}`,
+        ContentType: 'image/webp',
+        Key: removeLeadingSlashes(targetPath)
+      })
+      .promise()
+      .then(() => resolve(`${this.spaceUrl}/${targetPath}`))
+      .catch(error => reject(error))
     })
   }
 
@@ -131,7 +241,7 @@ class DOStore extends BaseStore {
 
   /**
    * Delete the image and return a promise.
-   * 
+   *
    * @param {FILE_NAME} fileName - the name of the file which is being deleted.
    * @param {TARGET_DIR} targetDir - a path to where to delete the image from.
    * @returns {*} promise
@@ -160,11 +270,11 @@ class DOStore extends BaseStore {
 
     return new Promise((resolve, reject) => {
       // remove trailing slashes
-      let path = (options.path || '').replace(/\/$|\\$/, '')
+      let path = (options.spaceUrl || '').replace(/\/$|\\$/, '')
 
       // check if path is stored in digitalocean handled by us
       if (!path.startsWith(this.spaceUrl)) {
-        return reject(new Error(`${path} is not stored in digital ocean`))
+        reject(new Error(`${path} is not stored in digital ocean`))
       }
 
       path = path.substring(this.spaceUrl.length)
