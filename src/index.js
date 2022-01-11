@@ -150,7 +150,7 @@ class DOStore extends BaseStore {
   save(image, targetDir) {
     const directory = targetDir || this.getTargetDir(this.subFolder)
 
-    if (['image/jpeg', 'image/png'].includes(image.type) && !image.name.includes('_o.')) {
+    if (['image/jpeg', 'image/png'].includes(image.type)) {
       const imageDimensions = Object.keys(imageSizes).reduce((dimensions, size) => {
         const {width, height} = imageSizes[size];
         const dimension = (width ? 'w' + width : '') + (height ? 'h' + height : '');
