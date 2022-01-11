@@ -60,18 +60,10 @@ const makeSafe = fn => (...args) => {
   try {
     require('sharp');
   } catch (err) {
-    return Promise.reject(new errors.InternalServerError({
-      message: 'Sharp wasn\'t installed',
-      code: 'SHARP_INSTALLATION',
-      err: err
-    }));
+    return Promise.reject(new Error('Sharp wasn\'t installed, ' + err.toString()));
   }
   return fn(...args).catch((err) => {
-    throw new errors.InternalServerError({
-      message: 'Unable to manipulate image.',
-      err: err,
-      code: 'IMAGE_PROCESSING'
-    });
+    throw new Error('Unable to manipulate image. ' + err.toString());
   });
 };
 
