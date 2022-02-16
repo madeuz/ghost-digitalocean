@@ -19,6 +19,8 @@ const imageSizes = {
   }
 }
 
+const baseSuffix = '_w1000.webp';
+
 const readFileAsync = promisify(readFile)
 
 const removeLeadingSlashes = str => str.indexOf('/') === 0 ? str.substring(1) : str
@@ -132,6 +134,13 @@ class DOStore extends BaseStore {
     })
   }
 
+  getUniqueImageName(image, targetDir) {
+    const ext = path.extname(image.name);
+    const name = this.getSanitizedFileName(path.basename(image.name, ext));
+
+    return this.generateUnique(targetDir, name, baseSuffix, 0).replace(baseSuffix, '');
+  }
+
   /**
    * Store the image and return a promise which resolves to the path from which the image should be requested in future.
    *
@@ -153,15 +162,15 @@ class DOStore extends BaseStore {
 
       return new Promise((resolve, reject) => {
         Promise.all([
-          this.getUniqueFileName(image, directory),
+          this.getUniqueImageName(image, directory),
           readFileAsync(image.path)
         ]).then(([fileName, file]) => (
           Promise.all(Object.keys(imageDimensions).map(imageDimension => (
             resizeFromBuffer(file, imageDimensions[imageDimension]).then((transformed) => (
-              this.saveRaw(transformed, fileName.replace(/\.[^/.]+$/, '_' + imageDimension + '.webp'))
+              this.saveRaw(transformed, fileName + '_' + imageDimension + '.webp')
             ))
           )))
-            .then(() => resolve(`${this.spaceUrl}/${fileName.replace(/\.[^/.]+$/, '_w1000.webp')}`))
+            .then(() => resolve(`${this.spaceUrl}/${fileName}${baseSuffix}`))
         )).catch(error => reject(error))
       })
     }
