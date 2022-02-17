@@ -138,7 +138,7 @@ class DOStore extends BaseStore {
     const ext = extname(image.name);
     const name = this.getSanitizedFileName(basename(image.name, ext));
 
-    return this.generateUnique(targetDir, name, baseSuffix, 0).replace(baseSuffix, '');
+    return this.generateUnique(targetDir, name, baseSuffix, 0);
   }
 
   /**
@@ -167,10 +167,10 @@ class DOStore extends BaseStore {
         ]).then(([fileName, file]) => (
           Promise.all(Object.keys(imageDimensions).map(imageDimension => (
             resizeFromBuffer(file, imageDimensions[imageDimension]).then((transformed) => (
-              this.saveRaw(transformed, fileName + '_' + imageDimension + '.webp')
+              this.saveRaw(transformed, `${fileName.replace(baseSuffix, '')}_${imageDimension}.webp`)
             ))
           )))
-            .then(() => resolve(`${this.spaceUrl}/${fileName}${baseSuffix}`))
+            .then(() => resolve(`${this.spaceUrl}/${fileName}`))
         )).catch(error => reject(error))
       })
     }
