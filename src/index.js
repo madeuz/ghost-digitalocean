@@ -1,6 +1,6 @@
 import AWS from 'aws-sdk'
 import BaseStore from 'ghost-storage-base'
-import { join } from 'path'
+import { basename, extname, join } from 'path'
 import Promise, { promisify } from 'bluebird'
 import { readFile } from 'fs'
 
@@ -135,8 +135,8 @@ class DOStore extends BaseStore {
   }
 
   getUniqueImageName(image, targetDir) {
-    const ext = path.extname(image.name);
-    const name = this.getSanitizedFileName(path.basename(image.name, ext));
+    const ext = extname(image.name);
+    const name = this.getSanitizedFileName(basename(image.name, ext));
 
     return this.generateUnique(targetDir, name, baseSuffix, 0).replace(baseSuffix, '');
   }
